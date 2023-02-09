@@ -4,6 +4,8 @@ mod sync;
 extern crate rocket;
 extern crate core;
 
+use tracing::{span, event, Level};
+use tracing_subscriber::layer::SubscriberExt;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::{Display, Error};
@@ -14,7 +16,7 @@ use ark_ff::to_bytes;
 use ark_groth16::{generate_random_parameters, prepare_verifying_key, verify_proof, create_random_proof as prove, ProvingKey, Proof};
 use ark_std::rand::thread_rng;
 use num_bigint::{BigInt, BigUint};
-use ark_relations::r1cs::{ConstraintMatrices, ConstraintSynthesizer, ConstraintSystem, OptimizationGoal, Result as R1CSResult, SynthesisError};
+use ark_relations::r1cs::{ConstraintLayer, ConstraintMatrices, ConstraintSynthesizer, ConstraintSystem, ConstraintTrace, OptimizationGoal, Result as R1CSResult, SynthesisError, TracingMode};
 use ark_serialize::CanonicalSerialize;
 use lazy_static::lazy_static;
 use num_traits::{Num, Zero};
@@ -45,11 +47,24 @@ pub struct ZKP {
 
 impl ZKP {
     pub fn new() -> ZKP {
+
+        // Tracing to help with debugging
+        let mut layer = ConstraintLayer::default();
+        layer.mode = TracingMode::OnlyConstraints;
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let trace = ConstraintTrace::capture();
+        println!("Trace is: {:?}", trace);
+
         let mut rng = thread_rng();
         let cfg = CircomConfig::<Bn254>::new(
-            "/Users/lvcong/rust/zk-rust-demo/src/circoms/single_tx.wasm",
-            "/Users/lvcong/rust/zk-rust-demo/src/circoms/single_tx.r1cs",
+            "/Users/lvcong/rust/zk-rust-demo/src/circoms/tpke_single.wasm",
+            "/Users/lvcong/rust/zk-rust-demo/src/circoms/tpke_single.r1cs",
         ).unwrap();
+        // Test
+        let trace = ConstraintTrace::capture();
+        println!("Trace is: {:?}", trace);
 
         // let accounts_root: BigInt = BigInt::from(1);
         // let intermediate_root: BigInt = BigInt::from(2);
@@ -91,11 +106,18 @@ impl ZKP {
         // builder.push_input("sender_proof_pos", sender_proof_pos);
         // builder.push_input("receiver_proof", receiver_proof);
         // builder.push_input("receiver_proof_pos", receiver_proof_pos);
+        let trace = ConstraintTrace::capture();
+        println!("Trace is: {:?}", trace);
         let circom=builder.setup();
+        let trace = ConstraintTrace::capture();
+        println!("Trace is: {:?}", trace);
+
         let params = generate_random_parameters::<Bn254, _, _>(circom, &mut rng).unwrap();
-
-
+        let trace = ConstraintTrace::capture();
+        println!("Trace is: {:?}", trace);
         let cir = builder.build().unwrap();
+        let trace = ConstraintTrace::capture();
+        println!("Trace is: {:?}", trace);
         ZKP {
             zkp_config: cfg.clone(),
             zkp_params: params.clone(),
@@ -264,13 +286,16 @@ fn error_return(str: &'static str) -> String {
     String::from(str)
 }
 
-#[launch]
-fn rocket() -> _ {
-    rocket::build()
-        .mount("/prove", routes![simple_prove_api])
-        .mount("/verify", routes![verify_api])
-}
+// #[launch]
+// fn rocket() -> _ {
+//     rocket::build()
+//         .mount("/prove", routes![simple_prove_api])
+//         .mount("/verify", routes![verify_api])
+// }
 
+fn main() {
+    let cc = ZKPInstance.zkp_config.clone();
+}
 
 #[test]
 fn test_generate_tx_proof() {
