@@ -1,12 +1,15 @@
+use std::path::PathBuf;
 use std::sync::Arc;
+use ethers::abi::Abi;
 use ethers::contract::{ContractError, ContractFactory, ContractInstance};
 use ethers::core::k256::ecdsa::SigningKey;
 use ethers::middleware::SignerMiddleware;
 use ethers::prelude::TransactionReceipt;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{LocalWallet, Signer, Wallet};
+use ethers::solc::{Artifact, Project, ProjectPathsConfig};
+use ethers::types::Bytes;
 use ethers_core::k256::elliptic_curve::weierstrass::add;
-use crate::get_contract;
 
 pub struct SimpleDeployer {}
 
@@ -49,6 +52,18 @@ impl SimpleDeployer {
         (self, contract, receipt)
     }
 }
+
+pub fn get_contract(name: &str) -> (Option<Abi>, Option<Bytes>, Option<Bytes>) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/contracts");
+    println!("{:?}", root);
+    let paths = ProjectPathsConfig::builder().root(&root).sources(&root).build().unwrap();
+    println!("{:?}", paths);
+    let project = Project::builder().paths(paths).ephemeral().no_artifacts().build().unwrap();
+    let output = project.compile().unwrap();
+    let contract = output.find_first(name).expect("could not find contract").clone();
+    contract.into_parts()
+}
+
 
 #[test]
 pub fn test_deploy() {
