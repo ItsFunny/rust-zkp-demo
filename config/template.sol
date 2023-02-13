@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// modified from https://github.com/matter-labs/solidity_plonk_verifier/blob/master/bellman_vk_codegen/template.sol
 
 pragma solidity >=0.5.0 <0.9.0;
 
@@ -415,15 +416,15 @@ contract Plonk4VerifierWithAccessToDNext {
         
         // High-version solidity has builtin safemath support, so "uint_0--" will panic instead of underflowing.
         // Therefore we prefer checking "if (i == 0)" below,
-        // instead of having "for (uint i = dens.length - 1; i>=0; i--)" here        
+        // instead of having "for (uint i = dens.length - 1; i>=0; i--)" here
         for (uint i = dens.length - 1; ; i--) {
             tmp_1.assign(tmp_2); // all inversed
             tmp_1.mul_assign(partial_products[i]); // clear lowest terms
             tmp_2.mul_assign(dens[i]);
             dens[i].assign(tmp_1);
-	    if (i == 0) {
-	      break;
-	    }
+            if (i == 0) {
+              break;
+            }
         }
         
         for (uint i = 0; i < nums.length; i++) {
@@ -788,74 +789,74 @@ contract KeyedVerifier is Plonk4VerifierWithAccessToDNext {
     uint256 constant SERIALIZED_PROOF_LENGTH = 33;
 
     function get_verification_key() internal pure returns(VerificationKey memory vk) {
-        vk.domain_size = 32768;
-        vk.num_inputs = 2;
-        vk.omega = PairingsBn254.new_fr(0x2b7ddfe4383c8d806530b94d3120ce6fcb511871e4d44a65f0acd0b96a8a942e);
+        vk.domain_size = {{domain_size}};
+        vk.num_inputs = {{num_inputs}};
+        vk.omega = PairingsBn254.new_fr({{omega}});
         vk.selector_commitments[0] = PairingsBn254.new_g1(
-            0x1509ad41b1157c882c7b53bf304ca12571f53bab118a0ac402ec5e9084746159,
-            0x028abfe82da9778264176c7988f00eebf2ddb0045646c4ca23e9d2366e2bf6ec
+            {{selector_commitment_0_0}},
+            {{selector_commitment_0_1}}
         );
         vk.selector_commitments[1] = PairingsBn254.new_g1(
-            0x0322e4ccde900ea94dffa8c59a49d6a6d5952ba7e4d59ca74c5bda38d0bd6ef0,
-            0x022d902410887c78430f070dd824e87410c834c83dada0f8e74fc7ed8581eb0f
+            {{selector_commitment_1_0}},
+            {{selector_commitment_1_1}}
         );
         vk.selector_commitments[2] = PairingsBn254.new_g1(
-            0x27ae283b78a9d81299118504bd47c47319c579bd4b5db79e14003e65d124068b,
-            0x038bbf4ba6d92063ddab1adac85bdd311648cd87a4fa8252ebc16aefa5724875
+            {{selector_commitment_2_0}},
+            {{selector_commitment_2_1}}
         );
         vk.selector_commitments[3] = PairingsBn254.new_g1(
-            0x27fe597185049977569aebcf4363a3c80fb570dde0f79736602e6f02951f07a6,
-            0x0029242815cb30f786b119688a6727c8841e64f8dd7bd39c3c49569af7a31edb
+            {{selector_commitment_3_0}},
+            {{selector_commitment_3_1}}
         );
         vk.selector_commitments[4] = PairingsBn254.new_g1(
-            0x0c4b7e005cf0015b30173567daf3a68f2efc946d654d9d5ba7c4741bac3499b2,
-            0x211ceda9be36ed079cdb091a42625d97a5f0089eedacbc84b21869628aa5b910
+            {{selector_commitment_4_0}},
+            {{selector_commitment_4_1}}
         );
         vk.selector_commitments[5] = PairingsBn254.new_g1(
-            0x19633758537b2c2ec5a5df1d589114df0a8125b5c0fc5b1476fd0ea36b235ba4,
-            0x2c972eebb09ded812f0f83bab9dffdb7125beab8b89053b0f9ee989237086a46
+            {{selector_commitment_5_0}},
+            {{selector_commitment_5_1}}
         );
         
         // we only have access to value of the d(x) witness polynomial on the next
         // trace step, so we only need one element here and deal with it in other places
         // by having this in mind
         vk.next_step_selector_commitments[0] = PairingsBn254.new_g1(
-            0x181194cb8f48832765a48666d8445c92c1679a5aeb030d9b095e658d424c0fb7,
-            0x2be0f497c0d0bd936d3827b14f469006dfa6785d3a54916a8240d29828e14443
+            {{next_step_selector_commitment_0_0}},
+            {{next_step_selector_commitment_0_1}}
         );
         
          vk.permutation_commitments[0] = PairingsBn254.new_g1(
-            0x08231d12cdeaa2fa710d6d57df3429790bc96434f382cd158bb29ccbfa078db0,
-            0x1bb8655feb16361349bfc5acb65045f00f2ac4c414f9dbc803529d67d6f92f35
+            {{permutation_commitment_0_0}},
+            {{permutation_commitment_0_1}}
         );
         vk.permutation_commitments[1] = PairingsBn254.new_g1(
-            0x0e1a6599caf2e0af7658b3d468af7333cec4e03fb2f14d274df2d06b35be78e1,
-            0x291d27781e18f4558edda67f80714c159961162db47148410e769f113b15213e
+            {{permutation_commitment_1_0}},
+            {{permutation_commitment_1_1}}
         );
         vk.permutation_commitments[2] = PairingsBn254.new_g1(
-            0x1c13ef159b17639032ea9e82c938832860cefef5b1e59a4b4e6e312f268ba97e,
-            0x1b9fd44de18ab98885dba1d1269a76c15010f45bb5d8d1bab81fabf7b79e31f4
+            {{permutation_commitment_2_0}},
+            {{permutation_commitment_2_1}}
         );
         vk.permutation_commitments[3] = PairingsBn254.new_g1(
-            0x1f7f1a03ee9b5f3799dec4adeb09d0f1d7e16559a2028a1bb324dc36fb53604b,
-            0x2d1506725b1d6291fb6dcc1ed18ebcbce893cf25f72bec51f91c2ffe55cf68cb
+            {{permutation_commitment_3_0}},
+            {{permutation_commitment_3_1}}
         );
         
         vk.permutation_non_residues[0] = PairingsBn254.new_fr(
-            0x0000000000000000000000000000000000000000000000000000000000000005
+            {{permutation_non_residue_0}}
         );
         vk.permutation_non_residues[1] = PairingsBn254.new_fr(
-            0x0000000000000000000000000000000000000000000000000000000000000007
+            {{permutation_non_residue_1}}
         );
         vk.permutation_non_residues[2] = PairingsBn254.new_fr(
-            0x000000000000000000000000000000000000000000000000000000000000000a
+            {{permutation_non_residue_2}}
         );
         
         vk.g2_x = PairingsBn254.new_g2(
-            [0x12740934ba9615b77b6a49b06fcce83ce90d67b1d0e2a530069e3a7306569a91,
-             0x116da8c89a0d090f3d8644ada33a5f1c8013ba7204aeca62d66d931b99afe6e7],
-            [0x25222d9816e5f86b4a7dedd00d04acc5c979c18bd22b834ea8c6d07c0ba441db,
-             0x076441042e77b6309644b56251f059cf14befc72ac8a6157d30924e58dc4c172]
+            [{{g2_x_x_c1}},
+             {{g2_x_x_c0}}],
+            [{{g2_x_y_c1}},
+             {{g2_x_y_c0}}]
         );
     }
 
@@ -949,7 +950,7 @@ contract KeyedVerifier is Plonk4VerifierWithAccessToDNext {
         );
     }
     
-    function verify_proof(
+    function verify_serialized_proof(
         uint256[] memory public_inputs, 
         uint256[] memory serialized_proof
     ) public view returns (bool) {

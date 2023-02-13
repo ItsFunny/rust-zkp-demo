@@ -6,8 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ethers = {version="1.0.2", features = ["abigen", "rustls", "ws","legacy"] ,git="https://github.com/gakonst/ethers-rs.git"}
+ethers = { version = "1.0.2", features = ["abigen", "rustls", "ws", "legacy"], git = "https://github.com/gakonst/ethers-rs.git" }
 tokio = "1.25.0"
 eyre = "0.6.8"
 ethers-providers = "1.0.2"
 ethers-core = "1.0.2"
+plonkit = { git = "https://github.com/ItsFunny/plonkit.git" }
+bellman_vk_codegen = { git = "https://github.com/fluidex/solidity_plonk_verifier.git" }
+serde = { version = "1.0.152", features = ["derive"] }
+serde_json = "1.0.93"

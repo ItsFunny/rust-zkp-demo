@@ -13,7 +13,6 @@ pub async fn listen_deposit(address: &str) -> Result<(), ProviderError> {
         Provider::<Ws>::connect("ws://127.0.0.1:8546")
             .await?;
     let client = Arc::new(client);
-
     let erc20_transfer_filter =
         Filter::new()
             .from_block(1)
