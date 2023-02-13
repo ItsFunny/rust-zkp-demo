@@ -6259,6 +6259,7 @@ dependencies = [
  "ethers-providers 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "eyre",
  "plonkit",
+ "primitive-types 0.3.0",
  "serde",
  "serde_json",
  "tokio",
