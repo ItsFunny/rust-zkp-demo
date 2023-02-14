@@ -1,12 +1,13 @@
 use std::collections::HashMap;
-use std::fmt::{format};
-use std::fs;
+use std::fmt::{Display, format, Formatter};
+use std::{error, fs, panic};
 use std::fs::{OpenOptions, read};
-use std::io::{BufReader, Error, ErrorKind, Read, Seek};
+use std::io::{BufReader, Cursor, Error, ErrorKind, Read, Seek};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use ethers::prelude::artifacts::BinaryOperator::LessThan;
 use ethers::utils::hex;
-use plonkit::bellman_ce::{Circuit, Engine};
+use plonkit::bellman_ce::{Circuit, Engine, SynthesisError};
 use plonkit::bellman_ce::bn256::Bn256;
 use plonkit::circom_circuit::{CircomCircuit, R1CS};
 use plonkit::{bellman_ce, plonk, reader};
@@ -15,13 +16,30 @@ use plonkit::bellman_ce::plonk::{Proof, VerificationKey};
 use plonkit::plonk::SetupForProver;
 use plonkit::reader::load_witness_from_array;
 use primitive_types::U256;
+use rocket_multipart_form_data::multer::bytes;
 use serde::{Serialize, Deserialize};
+use crate::ZKPInstance;
 
 const MONOMIAL_KEY_FILE: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/plonk/setup/setup_2^10.key");
 const TEMPLATE_SOL: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/config/template.sol");
 const SAVE_TEMP_PATH: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/temp");
 const DEFAULT_TRANSCRIPT: &'static str = "keccak";
 
+#[derive(Debug, Clone)]
+pub struct TempError;
+
+impl Display for TempError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "temp error")
+    }
+}
+
+// 为 `DoubleError` 实现 `Error` trait，这样其他错误可以包裹这个错误类型。
+impl error::Error for TempError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        None
+    }
+}
 
 pub struct ZKPCircomInstance {
     pub r1cs: R1CS<Bn256>,
@@ -34,8 +52,38 @@ pub struct ZKPCircomInstance {
 pub struct ZKPFactory {}
 
 impl ZKPFactory {
-    pub fn build<R: Read + Seek>(self, id: String, r: R) -> ZKPCircomInstance {
-        let (r1cs, _) = reader::load_r1cs_from_bin(r);
+    pub fn build(self, id: String, r: Vec<u8>) -> ZKPCircomInstance {
+        let res = self.build_with_key_type(MONOMIAL_KEY_FILE, id.clone(), r.clone());
+        if let Err(e) = res {
+            let new_file = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/plonk/setup/setup_2^20.key");
+            self.build_with_key_type(new_file, id.clone(), r.clone()).unwrap()
+        } else {
+            return res.unwrap();
+        }
+        // let (r1cs, _) = reader::load_r1cs_from_bin(r);
+        // let circuit = CircomCircuit {
+        //     r1cs: r1cs.clone(),
+        //     witness: None,
+        //     wire_mapping: None,
+        //     aux_offset: plonk::AUX_OFFSET,
+        // };
+        //
+        // let setup = plonk::SetupForProver::prepare_setup_for_prover(
+        //     circuit.clone(),
+        //     reader::load_key_monomial_form(MONOMIAL_KEY_FILE),
+        //     reader::maybe_load_key_lagrange_form(None),
+        // )
+        //     .unwrap();
+        //
+        // let vk = setup.make_verification_key().expect("fail to create vk");
+        //
+        //
+        // ZKPCircomInstance { r1cs: r1cs.clone(), key: id, prover: setup, vk: (vk.clone() as VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>) }
+    }
+
+    fn build_with_key_type(&self, path: &str, id: String, r: Vec<u8>) -> Result<ZKPCircomInstance, Error> {
+        let reader = Cursor::new(r);
+        let (r1cs, _) = reader::load_r1cs_from_bin(reader);
         let circuit = CircomCircuit {
             r1cs: r1cs.clone(),
             witness: None,
@@ -45,15 +93,23 @@ impl ZKPFactory {
 
         let setup = plonk::SetupForProver::prepare_setup_for_prover(
             circuit.clone(),
-            reader::load_key_monomial_form(MONOMIAL_KEY_FILE),
+            reader::load_key_monomial_form(path),
             reader::maybe_load_key_lagrange_form(None),
         )
             .unwrap();
 
-        let vk = setup.make_verification_key().expect("fail to create vk");
+        let res = panic::catch_unwind(|| {
+            let _ = setup.get_srs_lagrange_form_from_monomial_form();
+        });
+        if res.is_err() {
+            return Err(Error::new(ErrorKind::InvalidData, TempError));
+        }
 
+        let vk = setup.make_verification_key().map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
 
-        ZKPCircomInstance { r1cs: r1cs.clone(), key: id, prover: setup, vk: (vk.clone() as VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>) }
+        Ok(ZKPCircomInstance { r1cs: r1cs.clone(), key: id, prover: setup, vk: (vk.clone() as VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>) })
     }
 }
 
@@ -115,7 +171,7 @@ impl Default for ZKPProverContainer {
 }
 
 impl ZKPProverContainer {
-    pub fn register<R: Read + Seek>(&mut self, req: RegisterRequest<R>) -> RegisterResponse {
+    pub fn register(&mut self, req: RegisterRequest) -> RegisterResponse {
         let mut cache = self.mutex.write().unwrap();
         let instance = cache.entry(req.key.clone()).or_insert(
             Arc::new(Mutex::new(ZKPFactory::default().build(req.key.clone(), req.reader)))
@@ -188,13 +244,14 @@ pub struct VerifyResponse {
     pub verify: bool,
 }
 
-pub struct RegisterRequest<R: Read + Seek> {
+#[derive(Clone)]
+pub struct RegisterRequest {
     pub key: String,
-    pub reader: R,
+    pub reader: Vec<u8>,
 }
 
-impl<R: Read + Seek> RegisterRequest<R> {
-    pub fn new(key: String, reader: R) -> Self {
+impl RegisterRequest {
+    pub fn new(key: String, reader: Vec<u8>) -> Self {
         Self { key, reader }
     }
 }
@@ -230,7 +287,10 @@ fn register_simple() -> ZKPProverContainer {
     let mut container = ZKPProverContainer::default();
     let r1cs_file_path = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/circoms/mycircuit.r1cs");
     let reader = OpenOptions::new().read(true).open(r1cs_file_path).expect("unable to open.");
-    container.register(RegisterRequest::new(String::from("demo"), reader));
+    let mut reader = BufReader::new(reader);
+    let mut buffer = Vec::<u8>::new();
+    reader.read_to_end(&mut buffer).expect("fail");
+    container.register(RegisterRequest::new(String::from("demo"), buffer));
     container
 }
 

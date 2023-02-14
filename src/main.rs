@@ -37,7 +37,7 @@ fn init_zkp() -> Arc<Mutex<ZKPProverContainer>> {
 async fn register<'r>(content_type: &ContentType, data: Data<'_>) -> String {
     let mut options = MultipartFormDataOptions::with_multipart_form_data_fields(
         vec![
-            MultipartFormDataField::raw("r1cs"),
+            MultipartFormDataField::raw("r1cs").size_limit(1024*1024*1024),
             MultipartFormDataField::text("key"),
         ]
     );
@@ -52,8 +52,7 @@ async fn register<'r>(content_type: &ContentType, data: Data<'_>) -> String {
 
     let mut binding = ZKPInstance.clone();
     let mut vv = binding.lock().unwrap();
-    let reader = Cursor::new(r1cs_field.raw);
-    let req = RegisterRequest { key: key_field, reader: reader };
+    let req = RegisterRequest { key: key_field, reader: r1cs_field.raw };
     let resp = vv.register(req);
     serde_json::json!(resp).to_string()
 }
@@ -62,7 +61,7 @@ async fn register<'r>(content_type: &ContentType, data: Data<'_>) -> String {
 async fn prove<'r>(content_type: &ContentType, data: Data<'_>) -> String {
     let mut options = MultipartFormDataOptions::with_multipart_form_data_fields(
         vec![
-            MultipartFormDataField::raw("witness"),
+            MultipartFormDataField::raw("witness").size_limit(1024*1024*1024),
             MultipartFormDataField::text("key"),
         ]
     );
@@ -88,8 +87,8 @@ async fn prove<'r>(content_type: &ContentType, data: Data<'_>) -> String {
 async fn verify<'r>(content_type: &ContentType, data: Data<'_>) -> String {
     let mut options = MultipartFormDataOptions::with_multipart_form_data_fields(
         vec![
-            MultipartFormDataField::text("hex_proof"),
-            MultipartFormDataField::text("key"),
+            MultipartFormDataField::text("hex_proof").size_limit(1024*1024*1024),
+            MultipartFormDataField::text("key").size_limit(1024*1024*1024),
         ]
     );
     let mut multipart_form_data_res = MultipartFormData::parse(content_type, data, options).await;

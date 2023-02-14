@@ -1,2 +1,5 @@
 /target
 .idea
+
+config/setup/*key
+testdata/plonk/setup/*.key
