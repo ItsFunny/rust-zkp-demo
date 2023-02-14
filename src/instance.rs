@@ -89,6 +89,13 @@ impl ZKPCircomInstance {
         }
         Ok(res)
     }
+
+    pub fn verify(&self, proof_bytes: Vec<u8>) -> Result<bool, Error> {
+        let proof = reader::load_proof_from_bytes::<Bn256>(proof_bytes);
+        plonk::verify(&self.vk.clone(), &proof, DEFAULT_TRANSCRIPT).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })
+    }
 }
 
 
@@ -123,8 +130,12 @@ impl ZKPProverContainer {
             let (inputs, serialized_proof) = bellman_vk_codegen::serialize_proof(&proof);
             let ser_proof_str = serde_json::to_string_pretty(&serialized_proof).unwrap();
             let ser_inputs_str = serde_json::to_string_pretty(&inputs).unwrap();
+            let mut proof_bytes = Vec::<u8>::new();
+            proof.write(&mut proof_bytes).map_err(|e| {
+                Error::new(ErrorKind::InvalidData, e)
+            })?;
             Ok(ProveResponse {
-                proof: serialized_proof.clone(),
+                proof: proof_bytes,
                 json_proof: ser_proof_str,
                 inputs: inputs.clone(),
                 inputs_json: ser_inputs_str,
@@ -133,9 +144,29 @@ impl ZKPProverContainer {
             panic!("asd")
         }
     }
+    pub fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
+        let cache = self.mutex.read().unwrap();
+        if let Some(instance) = cache.get(req.key.as_str()) {
+            let v = instance.lock().unwrap();
+            let res = v.verify(req.proof_bytes)?;
+            Ok(VerifyResponse { verify: res })
+        } else {
+            panic!("asd")
+        }
+    }
+
     pub fn prove_json(&self, req: ProveRequest) {
         let res = self.prove(req).unwrap();
     }
+}
+
+pub struct VerifyRequest {
+    pub key: String,
+    pub proof_bytes: Vec<u8>,
+}
+
+pub struct VerifyResponse {
+    pub verify: bool,
 }
 
 pub struct RegisterRequest<R: Read + Seek> {
@@ -164,7 +195,7 @@ pub struct ProveRequest {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProveResponse {
-    pub proof: Vec<U256>,
+    pub proof: Vec<u8>,
     pub json_proof: String,
     pub inputs: Vec<U256>,
     pub inputs_json: String,
@@ -190,4 +221,16 @@ pub fn test_prove() {
     let wtns = fs::read(wit_file).expect("fail");
     let res = container.prove(ProveRequest { key: String::from("demo"), wtns }).expect("fail to prove");
     println!("{:?}", res);
+}
+
+#[test]
+pub fn test_verify() {
+    let mut container = register_simple();
+    let wit_file = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/circoms/witness.wtns");
+    let wtns = fs::read(wit_file).expect("fail");
+    let key = String::from("demo");
+    let res = container.prove(ProveRequest { key: key.clone(), wtns }).expect("fail to prove");
+    println!("{:?}", res);
+    let v = container.verify(VerifyRequest { key: key.clone(), proof_bytes: res.proof }).expect("fail to verify");
+    assert!(v.verify);
 }
