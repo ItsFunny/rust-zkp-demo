@@ -5,6 +5,7 @@ use std::fs::{OpenOptions, read};
 use std::io::{BufReader, Error, ErrorKind, Read, Seek};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use ethers::prelude::artifacts::BinaryOperator::LessThan;
+use ethers::utils::hex;
 use plonkit::bellman_ce::{Circuit, Engine};
 use plonkit::bellman_ce::bn256::Bn256;
 use plonkit::circom_circuit::{CircomCircuit, R1CS};
@@ -120,7 +121,8 @@ impl ZKPProverContainer {
             Arc::new(Mutex::new(ZKPFactory::default().build(req.key.clone(), req.reader)))
         );
         let (vk, sol) = instance.clone().lock().unwrap().get();
-        RegisterResponse { vk, sol }
+        let v = String::from_utf8_lossy(sol.as_slice()).to_string();
+        RegisterResponse { vk: vk, sol: v }
     }
     pub fn prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
         let cache = self.mutex.read().unwrap();
@@ -130,12 +132,15 @@ impl ZKPProverContainer {
             let (inputs, serialized_proof) = bellman_vk_codegen::serialize_proof(&proof);
             let ser_proof_str = serde_json::to_string_pretty(&serialized_proof).unwrap();
             let ser_inputs_str = serde_json::to_string_pretty(&inputs).unwrap();
+            let vv: Vec<U256> = serde_json::from_str(ser_proof_str.clone().as_str()).unwrap();
+            assert_eq!(vv, serialized_proof);
             let mut proof_bytes = Vec::<u8>::new();
             proof.write(&mut proof_bytes).map_err(|e| {
                 Error::new(ErrorKind::InvalidData, e)
             })?;
             Ok(ProveResponse {
-                proof: proof_bytes,
+                proof: proof_bytes.clone(),
+                hex_proof: hex::encode(proof_bytes.clone()),
                 json_proof: ser_proof_str,
                 inputs: inputs.clone(),
                 inputs_json: ser_inputs_str,
@@ -154,9 +159,22 @@ impl ZKPProverContainer {
             panic!("asd")
         }
     }
+    // pub fn verify_with_pretty(&self)
 
     pub fn prove_json(&self, req: ProveRequest) {
         let res = self.prove(req).unwrap();
+    }
+}
+
+pub struct PrettyVerifyRequest {
+    pub key: String,
+    pub proof: String,
+}
+
+impl Into<VerifyRequest> for PrettyVerifyRequest {
+    fn into(self) -> VerifyRequest {
+        let vv: Vec<U256> = serde_json::from_str(self.proof.as_str()).unwrap();
+        VerifyRequest { key: self.key, proof_bytes: vec![] }
     }
 }
 
@@ -165,6 +183,7 @@ pub struct VerifyRequest {
     pub proof_bytes: Vec<u8>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
 pub struct VerifyResponse {
     pub verify: bool,
 }
@@ -183,7 +202,7 @@ impl<R: Read + Seek> RegisterRequest<R> {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RegisterResponse {
     pub vk: Vec<u8>,
-    pub sol: Vec<u8>,
+    pub sol: String,
 }
 
 
@@ -196,6 +215,7 @@ pub struct ProveRequest {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProveResponse {
     pub proof: Vec<u8>,
+    pub hex_proof: String,
     pub json_proof: String,
     pub inputs: Vec<U256>,
     pub inputs_json: String,
