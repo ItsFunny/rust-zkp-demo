@@ -18,13 +18,13 @@ use serde::{Serialize, Deserialize};
 
 const MONOMIAL_KEY_FILE: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/plonk/setup/setup_2^10.key");
 const TEMPLATE_SOL: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/config/template.sol");
-const SAVE_TEMP_PATH: &'static str = concat!(env!("CARGO_MANIFEST_DIR", "/temp"));
+const SAVE_TEMP_PATH: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/temp");
 const DEFAULT_TRANSCRIPT: &'static str = "keccak";
 
 
 pub struct ZKPCircomInstance {
     pub r1cs: R1CS<Bn256>,
-    pub id: String,
+    pub key: String,
     pub prover: SetupForProver,
     pub vk: VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>,
 }
@@ -51,7 +51,8 @@ impl ZKPFactory {
 
         let vk = setup.make_verification_key().expect("fail to create vk");
 
-        ZKPCircomInstance { r1cs: r1cs.clone(), id: id, prover: setup, vk: (vk.clone() as VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>) }
+
+        ZKPCircomInstance { r1cs: r1cs.clone(), key: id, prover: setup, vk: (vk.clone() as VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>) }
     }
 }
 
@@ -59,7 +60,8 @@ impl ZKPCircomInstance {
     pub fn get(&mut self) -> (Vec<u8>, Vec<u8>) {
         let mut vk_bytes = Vec::<u8>::new();
         self.vk.clone().write(&mut vk_bytes).unwrap();
-        let path: String = SAVE_TEMP_PATH.to_string() + &(format!("{}.sol", self.id.clone()));
+        let path: String = SAVE_TEMP_PATH.to_string() + &(format!("{}.sol", self.key.clone()));
+        println!("path:{}", path);
         bellman_vk_codegen::render_verification_key(&self.vk, TEMPLATE_SOL, path.clone().as_str());
         let sol_bytes = fs::read(path.clone()).expect("fail");
         // rm
@@ -76,9 +78,16 @@ impl ZKPCircomInstance {
             wire_mapping: None,
             aux_offset: plonk::AUX_OFFSET,
         };
-        self.prover.prove(circuit, DEFAULT_TRANSCRIPT).map_err(|e| {
+        let res = self.prover.prove(circuit, DEFAULT_TRANSCRIPT).map_err(|e| {
             Error::new(ErrorKind::InvalidData, e)
-        })
+        })?;
+        let b = plonk::verify(&self.vk.clone(), &res, DEFAULT_TRANSCRIPT).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+        if !b {
+            panic!("fail to verify");
+        }
+        Ok(res)
     }
 }
 
@@ -101,14 +110,14 @@ impl ZKPProverContainer {
     pub fn register<R: Read + Seek>(&mut self, req: RegisterRequest<R>) -> RegisterResponse {
         let mut cache = self.mutex.write().unwrap();
         let instance = cache.entry(req.key.clone()).or_insert(
-            Arc::new(Mutex::new(ZKPFactory::default().build(req.id, req.reader)))
+            Arc::new(Mutex::new(ZKPFactory::default().build(req.key.clone(), req.reader)))
         );
         let (vk, sol) = instance.clone().lock().unwrap().get();
         RegisterResponse { vk, sol }
     }
     pub fn prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
         let cache = self.mutex.read().unwrap();
-        if let Some(instance) = cache.get(req.id.as_str()) {
+        if let Some(instance) = cache.get(req.key.as_str()) {
             let v = instance.lock().unwrap();
             let proof = v.prove(req.wtns)?;
             let (inputs, serialized_proof) = bellman_vk_codegen::serialize_proof(&proof);
@@ -132,15 +141,13 @@ impl ZKPProverContainer {
 pub struct RegisterRequest<R: Read + Seek> {
     pub key: String,
     pub reader: R,
-    pub id: String,
 }
 
 impl<R: Read + Seek> RegisterRequest<R> {
-    pub fn new(id: String, key: String, reader: R) -> Self {
-        Self { key, reader, id }
+    pub fn new(key: String, reader: R) -> Self {
+        Self { key, reader }
     }
 }
-
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RegisterResponse {
@@ -151,7 +158,7 @@ pub struct RegisterResponse {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProveRequest {
-    pub id: String,
+    pub key: String,
     pub wtns: Vec<u8>,
 }
 
@@ -172,8 +179,7 @@ fn register_simple() -> ZKPProverContainer {
     let mut container = ZKPProverContainer::default();
     let r1cs_file_path = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/circoms/mycircuit.r1cs");
     let reader = OpenOptions::new().read(true).open(r1cs_file_path).expect("unable to open.");
-    let ret = container.register(RegisterRequest::new(String::from("123"), String::from("demo"), reader));
-    println!("{:?}", ret);
+    container.register(RegisterRequest::new(String::from("demo"), reader));
     container
 }
 
@@ -182,5 +188,6 @@ pub fn test_prove() {
     let mut container = register_simple();
     let wit_file = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/circoms/witness.wtns");
     let wtns = fs::read(wit_file).expect("fail");
-    let res = container.prove(ProveRequest { id: String::from("123"), wtns }).expect("fail to prove");
+    let res = container.prove(ProveRequest { key: String::from("demo"), wtns }).expect("fail to prove");
+    println!("{:?}", res);
 }
