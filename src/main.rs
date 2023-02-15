@@ -37,7 +37,7 @@ fn init_zkp() -> Arc<Mutex<ZKPProverContainer>> {
 async fn register<'r>(content_type: &ContentType, data: Data<'_>) -> String {
     let mut options = MultipartFormDataOptions::with_multipart_form_data_fields(
         vec![
-            MultipartFormDataField::raw("r1cs").size_limit(1024*1024*1024),
+            MultipartFormDataField::raw("r1cs").size_limit(1024 * 1024 * 1024),
             MultipartFormDataField::text("key"),
         ]
     );
@@ -48,7 +48,7 @@ async fn register<'r>(content_type: &ContentType, data: Data<'_>) -> String {
     let mut multipart_form_data = multipart_form_data_res.unwrap();
     let r1cs_field = multipart_form_data.raw.get_mut("r1cs").unwrap().remove(0); //
     let key_field = multipart_form_data.texts.get_mut("key").unwrap().remove(0).text;
-    println!("key:{},r1cs:{:?}", key_field, r1cs_field);
+    println!("key:{}", key_field);
 
     let mut binding = ZKPInstance.clone();
     let mut vv = binding.lock().unwrap();
@@ -61,7 +61,7 @@ async fn register<'r>(content_type: &ContentType, data: Data<'_>) -> String {
 async fn prove<'r>(content_type: &ContentType, data: Data<'_>) -> String {
     let mut options = MultipartFormDataOptions::with_multipart_form_data_fields(
         vec![
-            MultipartFormDataField::raw("witness").size_limit(1024*1024*1024),
+            MultipartFormDataField::raw("witness").size_limit(1024 * 1024 * 1024),
             MultipartFormDataField::text("key"),
         ]
     );
@@ -87,8 +87,8 @@ async fn prove<'r>(content_type: &ContentType, data: Data<'_>) -> String {
 async fn verify<'r>(content_type: &ContentType, data: Data<'_>) -> String {
     let mut options = MultipartFormDataOptions::with_multipart_form_data_fields(
         vec![
-            MultipartFormDataField::text("hex_proof").size_limit(1024*1024*1024),
-            MultipartFormDataField::text("key").size_limit(1024*1024*1024),
+            MultipartFormDataField::text("hex_proof").size_limit(1024 * 1024 * 1024),
+            MultipartFormDataField::text("key").size_limit(1024 * 1024 * 1024),
         ]
     );
     let mut multipart_form_data_res = MultipartFormData::parse(content_type, data, options).await;

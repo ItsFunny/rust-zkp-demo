@@ -48,7 +48,11 @@ pub trait Verifier {
     fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error>;
 }
 
-pub trait ZKCouple: Prover + Verifier {}
+pub trait Helper {
+    fn get_vk_and_sol(&self) -> Result<(Vec<u8>, Vec<u8>), Error>;
+}
+
+pub trait ZKComponent: Prover + Verifier + Helper + Send + Sync {}
 
 pub struct ZKPCircomInstance {
     pub r1cs: R1CS<Bn256>,
@@ -108,7 +112,13 @@ impl Verifier for ZKPCircomInstance {
     }
 }
 
-impl ZKCouple for ZKPCircomInstance {}
+impl Helper for ZKPCircomInstance {
+    fn get_vk_and_sol(&self) -> Result<(Vec<u8>, Vec<u8>), Error> {
+        Ok(self.get())
+    }
+}
+
+impl ZKComponent for ZKPCircomInstance {}
 
 #[derive(Default)]
 pub struct ZKPFactory {}
@@ -157,7 +167,7 @@ impl ZKPFactory {
 }
 
 impl ZKPCircomInstance {
-    pub fn get(&mut self) -> (Vec<u8>, Vec<u8>) {
+    pub fn get(&self) -> (Vec<u8>, Vec<u8>) {
         let mut vk_bytes = Vec::<u8>::new();
         self.vk.clone().write(&mut vk_bytes).unwrap();
         let path: String = SAVE_TEMP_PATH.to_string() + &(format!("{}.sol", self.key.clone()));
@@ -172,7 +182,7 @@ impl ZKPCircomInstance {
 
 
 pub struct ZKPProverContainer {
-    mutex: RwLock<HashMap<String, Arc<Mutex<ZKPCircomInstance>>>>,
+    mutex: RwLock<HashMap<String, Arc<Mutex<Box<dyn ZKComponent>>>>>,
     pub nodes: HashMap<String, Arc<ZKPCircomInstance>>,
 }
 
@@ -189,9 +199,9 @@ impl ZKPProverContainer {
     pub fn register(&mut self, req: RegisterRequest) -> RegisterResponse {
         let mut cache = self.mutex.write().unwrap();
         let instance = cache.entry(req.key.clone()).or_insert(
-            Arc::new(Mutex::new(ZKPFactory::default().build(req.key.clone(), req.reader)))
+            Arc::new(Mutex::new(Box::new(ZKPFactory::default().build(req.key.clone(), req.reader))))
         );
-        let (vk, sol) = instance.clone().lock().unwrap().get();
+        let (vk, sol) = instance.clone().lock().unwrap().get_vk_and_sol().unwrap();
         let v = String::from_utf8_lossy(sol.as_slice()).to_string();
         RegisterResponse { vk: vk, sol: v }
     }
