@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+crossbeam = "0.8.2"
 ethers = { version = "1.0.2", features = ["abigen", "rustls", "ws", "legacy"], git = "https://github.com/gakonst/ethers-rs.git" }
 tokio = "1.25.0"
 eyre = "0.6.8"
@@ -20,6 +21,8 @@ rocket = { version = "0.5.0-rc.2", features = ["json", "msgpack", "uuid"] }
 lazy_static = "1.4.0"
 mime = "0.3.16"
 rocket-multipart-form-data = "0.10.5"
+async-trait = "0.1.64"
+
 
 
 
