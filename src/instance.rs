@@ -34,12 +34,21 @@ impl Display for TempError {
     }
 }
 
-// 为 `DoubleError` 实现 `Error` trait，这样其他错误可以包裹这个错误类型。
 impl error::Error for TempError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         None
     }
 }
+
+pub trait Prover {
+    fn prove(&self, req: ProveRequest) -> Result<ProveResponse, Error>;
+}
+
+pub trait Verifier {
+    fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error>;
+}
+
+pub trait ZKCouple: Prover + Verifier {}
 
 pub struct ZKPCircomInstance {
     pub r1cs: R1CS<Bn256>,
@@ -47,6 +56,59 @@ pub struct ZKPCircomInstance {
     pub prover: SetupForProver,
     pub vk: VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>,
 }
+
+impl Prover for ZKPCircomInstance {
+    fn prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
+        let witness = req.wtns;
+        let witness = load_witness_from_array::<Bn256>(witness).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+        let circuit = CircomCircuit {
+            r1cs: self.r1cs.clone(),
+            witness: Some(witness),
+            wire_mapping: None,
+            aux_offset: plonk::AUX_OFFSET,
+        };
+        let proof = self.prover.prove(circuit, DEFAULT_TRANSCRIPT).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+        let b = plonk::verify(&self.vk.clone(), &proof, DEFAULT_TRANSCRIPT).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+        if !b {
+            return Err(Error::new(ErrorKind::InvalidData, TempError {}));
+        }
+        let (inputs, serialized_proof) = bellman_vk_codegen::serialize_proof(&proof);
+        let ser_proof_str = serde_json::to_string_pretty(&serialized_proof).unwrap();
+        let ser_inputs_str = serde_json::to_string_pretty(&inputs).unwrap();
+        let vv: Vec<U256> = serde_json::from_str(ser_proof_str.clone().as_str()).unwrap();
+        assert_eq!(vv, serialized_proof);
+        let mut proof_bytes = Vec::<u8>::new();
+        proof.write(&mut proof_bytes).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+
+        Ok(ProveResponse {
+            proof: proof_bytes.clone(),
+            hex_proof: hex::encode(proof_bytes.clone()),
+            json_proof: ser_proof_str,
+            inputs: inputs.clone(),
+            inputs_json: ser_inputs_str,
+        })
+    }
+}
+
+impl Verifier for ZKPCircomInstance {
+    fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
+        let proof = reader::load_proof_from_bytes::<Bn256>(req.proof_bytes);
+        let v = plonk::verify(&self.vk.clone(), &proof, DEFAULT_TRANSCRIPT).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+        Ok(VerifyResponse { verify: v })
+    }
+}
+
+impl ZKCouple for ZKPCircomInstance {}
 
 #[derive(Default)]
 pub struct ZKPFactory {}
@@ -60,25 +122,6 @@ impl ZKPFactory {
         } else {
             return res.unwrap();
         }
-        // let (r1cs, _) = reader::load_r1cs_from_bin(r);
-        // let circuit = CircomCircuit {
-        //     r1cs: r1cs.clone(),
-        //     witness: None,
-        //     wire_mapping: None,
-        //     aux_offset: plonk::AUX_OFFSET,
-        // };
-        //
-        // let setup = plonk::SetupForProver::prepare_setup_for_prover(
-        //     circuit.clone(),
-        //     reader::load_key_monomial_form(MONOMIAL_KEY_FILE),
-        //     reader::maybe_load_key_lagrange_form(None),
-        // )
-        //     .unwrap();
-        //
-        // let vk = setup.make_verification_key().expect("fail to create vk");
-        //
-        //
-        // ZKPCircomInstance { r1cs: r1cs.clone(), key: id, prover: setup, vk: (vk.clone() as VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>) }
     }
 
     fn build_with_key_type(&self, path: &str, id: String, r: Vec<u8>) -> Result<ZKPCircomInstance, Error> {
@@ -125,34 +168,6 @@ impl ZKPCircomInstance {
         fs::remove_file(path.clone());
         (vk_bytes, sol_bytes)
     }
-    pub fn prove(&self, witness: Vec<u8>) -> Result<Proof<Bn256, PlonkCsWidth4WithNextStepParams>, Error> {
-        let witness = load_witness_from_array::<Bn256>(witness).map_err(|e| {
-            Error::new(ErrorKind::InvalidData, e)
-        })?;
-        let circuit = CircomCircuit {
-            r1cs: self.r1cs.clone(),
-            witness: Some(witness),
-            wire_mapping: None,
-            aux_offset: plonk::AUX_OFFSET,
-        };
-        let res = self.prover.prove(circuit, DEFAULT_TRANSCRIPT).map_err(|e| {
-            Error::new(ErrorKind::InvalidData, e)
-        })?;
-        let b = plonk::verify(&self.vk.clone(), &res, DEFAULT_TRANSCRIPT).map_err(|e| {
-            Error::new(ErrorKind::InvalidData, e)
-        })?;
-        if !b {
-            panic!("fail to verify");
-        }
-        Ok(res)
-    }
-
-    pub fn verify(&self, proof_bytes: Vec<u8>) -> Result<bool, Error> {
-        let proof = reader::load_proof_from_bytes::<Bn256>(proof_bytes);
-        plonk::verify(&self.vk.clone(), &proof, DEFAULT_TRANSCRIPT).map_err(|e| {
-            Error::new(ErrorKind::InvalidData, e)
-        })
-    }
 }
 
 
@@ -184,35 +199,18 @@ impl ZKPProverContainer {
         let cache = self.mutex.read().unwrap();
         if let Some(instance) = cache.get(req.key.as_str()) {
             let v = instance.lock().unwrap();
-            let proof = v.prove(req.wtns)?;
-            let (inputs, serialized_proof) = bellman_vk_codegen::serialize_proof(&proof);
-            let ser_proof_str = serde_json::to_string_pretty(&serialized_proof).unwrap();
-            let ser_inputs_str = serde_json::to_string_pretty(&inputs).unwrap();
-            let vv: Vec<U256> = serde_json::from_str(ser_proof_str.clone().as_str()).unwrap();
-            assert_eq!(vv, serialized_proof);
-            let mut proof_bytes = Vec::<u8>::new();
-            proof.write(&mut proof_bytes).map_err(|e| {
-                Error::new(ErrorKind::InvalidData, e)
-            })?;
-            Ok(ProveResponse {
-                proof: proof_bytes.clone(),
-                hex_proof: hex::encode(proof_bytes.clone()),
-                json_proof: ser_proof_str,
-                inputs: inputs.clone(),
-                inputs_json: ser_inputs_str,
-            })
+            v.prove(req.clone())
         } else {
-            panic!("asd")
+            Err(Error::new(ErrorKind::InvalidData, TempError {}))
         }
     }
     pub fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
         let cache = self.mutex.read().unwrap();
         if let Some(instance) = cache.get(req.key.as_str()) {
             let v = instance.lock().unwrap();
-            let res = v.verify(req.proof_bytes)?;
-            Ok(VerifyResponse { verify: res })
+            v.verify(req.clone())
         } else {
-            panic!("asd")
+            Err(Error::new(ErrorKind::InvalidData, TempError {}))
         }
     }
     // pub fn verify_with_pretty(&self)
@@ -234,6 +232,7 @@ impl Into<VerifyRequest> for PrettyVerifyRequest {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct VerifyRequest {
     pub key: String,
     pub proof_bytes: Vec<u8>,
@@ -263,7 +262,7 @@ pub struct RegisterResponse {
 }
 
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ProveRequest {
     pub key: String,
     pub wtns: Vec<u8>,
