@@ -22,7 +22,6 @@ mod contract_adapter;
 pub mod verifier_contract;
 pub mod circuits;
 mod instance;
-pub mod ddd;
 
 lazy_static! {
     static ref ZKPInstance: Arc<Mutex<ZKPProverContainer>> = init_zkp();

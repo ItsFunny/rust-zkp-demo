@@ -467,8 +467,3 @@ pub fn test_verify() {
     let v = container.verify(VerifyRequest { key: key.clone(), proof_bytes: res.proof }).expect("fail to verify");
     assert!(v.verify);
 }
-
-#[test]
-pub fn test_start() {
-    let mut container = register_simple();
-}
