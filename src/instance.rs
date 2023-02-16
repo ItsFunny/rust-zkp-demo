@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fmt::{Display, format, Formatter};
 use std::{error, fs, panic};
+use std::any::Any;
 use std::fs::{OpenOptions, read};
 use std::io::{BufReader, Cursor, Error, ErrorKind, Read, Seek};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use crossbeam::channel::{Receiver, Select, Sender};
 use ethers::prelude::artifacts::BinaryOperator::LessThan;
 use ethers::utils::hex;
 use plonkit::bellman_ce::{Circuit, Engine, SynthesisError};
@@ -18,6 +20,8 @@ use plonkit::reader::load_witness_from_array;
 use primitive_types::U256;
 use rocket_multipart_form_data::multer::bytes;
 use serde::{Serialize, Deserialize};
+use tokio::runtime::Runtime;
+use tokio::sync::oneshot;
 use crate::ZKPInstance;
 
 const MONOMIAL_KEY_FILE: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/plonk/setup/setup_2^10.key");
@@ -40,11 +44,20 @@ impl error::Error for TempError {
     }
 }
 
+#[async_trait]
+pub trait ZKComponent: Prover + Verifier + Helper + Send + Sync {
+    async fn start_zk(self);
+}
+
+#[async_trait]
 pub trait Prover {
+    async fn async_prove(&self, req: ProveRequest) -> Result<ProveResponse, Error>;
     fn prove(&self, req: ProveRequest) -> Result<ProveResponse, Error>;
 }
 
+#[async_trait]
 pub trait Verifier {
+    async fn async_verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error>;
     fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error>;
 }
 
@@ -52,17 +65,43 @@ pub trait Helper {
     fn get_vk_and_sol(&self) -> Result<(Vec<u8>, Vec<u8>), Error>;
 }
 
-pub trait ZKComponent: Prover + Verifier + Helper + Send + Sync {}
 
 pub struct ZKPCircomInstance {
+    pub sender: Sender<Cmd>,
+    receiver: Receiver<Cmd>,
     pub r1cs: R1CS<Bn256>,
     pub key: String,
-    pub prover: SetupForProver,
+    pub prover: Arc<SetupForProver>,
     pub vk: VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>,
 }
 
-impl Prover for ZKPCircomInstance {
-    fn prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
+impl Clone for ZKPCircomInstance {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            receiver: self.receiver.clone(),
+            r1cs: self.r1cs.clone(),
+            key: self.key.clone(),
+            prover: self.prover.clone(),
+            vk: self.vk.clone(),
+        }
+    }
+}
+
+impl ZKPCircomInstance {
+    pub fn get(&self) -> (Vec<u8>, Vec<u8>) {
+        let mut vk_bytes = Vec::<u8>::new();
+        self.vk.clone().write(&mut vk_bytes).unwrap();
+        let path: String = SAVE_TEMP_PATH.to_string() + &(format!("{}.sol", self.key.clone()));
+        println!("path:{}", path);
+        bellman_vk_codegen::render_verification_key(&self.vk, TEMPLATE_SOL, path.clone().as_str());
+        let sol_bytes = fs::read(path.clone()).expect("fail");
+        // rm
+        fs::remove_file(path.clone());
+        (vk_bytes, sol_bytes)
+    }
+
+    fn do_prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
         let witness = req.wtns;
         let witness = load_witness_from_array::<Bn256>(witness).map_err(|e| {
             Error::new(ErrorKind::InvalidData, e)
@@ -100,15 +139,61 @@ impl Prover for ZKPCircomInstance {
             inputs_json: ser_inputs_str,
         })
     }
-}
 
-impl Verifier for ZKPCircomInstance {
-    fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
+    fn do_verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
         let proof = reader::load_proof_from_bytes::<Bn256>(req.proof_bytes);
         let v = plonk::verify(&self.vk.clone(), &proof, DEFAULT_TRANSCRIPT).map_err(|e| {
             Error::new(ErrorKind::InvalidData, e)
         })?;
         Ok(VerifyResponse { verify: v })
+    }
+}
+
+// TODO,这里的,全丢到async fn中
+#[async_trait]
+impl Prover for ZKPCircomInstance {
+    fn prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
+        futures::executor::block_on(self.async_prove(req))
+    }
+
+    async fn async_prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
+        let (ts, mut rs) = oneshot::channel();
+        self.sender.send(Cmd::new(Operation::Prove(req), ts)).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+
+        rs.await.map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        }).map(|v| {
+            if let ResultOperation::Proof(value) = v {
+                value
+            } else {
+                unreachable!()
+            }
+        })
+    }
+}
+
+#[async_trait]
+impl Verifier for ZKPCircomInstance {
+    async fn async_verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
+        let (ts, mut rs) = oneshot::channel();
+        self.sender.send(Cmd::new(Operation::Verify(req), ts)).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+        rs.await.map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        }).map(|v| {
+            if let ResultOperation::Verify(value) = v {
+                value
+            } else {
+                unreachable!()
+            }
+        })
+    }
+
+    fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
+        futures::executor::block_on(self.async_verify(req))
     }
 }
 
@@ -118,7 +203,86 @@ impl Helper for ZKPCircomInstance {
     }
 }
 
-impl ZKComponent for ZKPCircomInstance {}
+pub enum Operation {
+    Prove(ProveRequest),
+    Verify(VerifyRequest),
+}
+
+#[derive(Debug)]
+pub enum ResultOperation {
+    Proof(ProveResponse),
+    Verify(VerifyResponse),
+    Fail(Error),
+}
+
+pub trait Event: Send + Sync {}
+
+pub struct Cmd
+{
+    pub op: Operation,
+    pub sender: oneshot::Sender<ResultOperation>,
+}
+
+unsafe impl Send for Cmd {}
+
+unsafe impl Sync for Cmd {}
+
+impl Cmd where
+{
+    pub fn new(op: Operation, sender: oneshot::Sender<ResultOperation>) -> Self {
+        Self { op, sender }
+    }
+}
+
+
+#[async_trait]
+impl ZKComponent for ZKPCircomInstance {
+    async fn start_zk(self) {
+        let clone_sub = self.receiver.clone();
+        let mut sel = Select::new();
+        sel.recv(&clone_sub);
+        loop {
+            let res = clone_sub.try_recv();
+            // If the operation turns out not to be ready, retry.
+            if let Err(e) = res {
+                if e.is_empty() {
+                    continue;
+                }
+            }
+            let cmd: Cmd = res.unwrap();
+            let mut send_ret: Option<ResultOperation> = None;
+
+            match cmd.op {
+                Operation::Prove(value) => {
+                    let mut res = self.do_prove(value);
+                    match res {
+                        Ok(prove_resp) => {
+                            send_ret = Some(ResultOperation::Proof(prove_resp));
+                        }
+                        Err(e) => {
+                            send_ret = Some(ResultOperation::Fail(e));
+                        }
+                    }
+                }
+                Operation::Verify(value) => {
+                    let mut res = self.do_verify(value);
+                    match res {
+                        Ok(resp) => {
+                            send_ret = Some(ResultOperation::Verify(resp));
+                        }
+                        Err(e) => {
+                            send_ret = Some(ResultOperation::Fail(e));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if let Some(v) = send_ret {
+                cmd.sender.send(v).expect("fail to send");
+            }
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct ZKPFactory {}
@@ -132,6 +296,15 @@ impl ZKPFactory {
         } else {
             return res.unwrap();
         }
+    }
+    // TODO: pass runtime
+    pub fn build_and_start(self, rt: Arc<Runtime>, id: String, r: Vec<u8>) -> Box<dyn ZKComponent> {
+        let ret = self.build(id, r);
+        let v = ret.clone();
+        rt.clone().spawn(async move {
+            v.clone().start_zk().await
+        });
+        return Box::new(ret.clone());
     }
 
     fn build_with_key_type(&self, path: &str, id: String, r: Vec<u8>) -> Result<ZKPCircomInstance, Error> {
@@ -162,35 +335,22 @@ impl ZKPFactory {
             Error::new(ErrorKind::InvalidData, e)
         })?;
 
-        Ok(ZKPCircomInstance { r1cs: r1cs.clone(), key: id, prover: setup, vk: (vk.clone() as VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>) })
-    }
-}
-
-impl ZKPCircomInstance {
-    pub fn get(&self) -> (Vec<u8>, Vec<u8>) {
-        let mut vk_bytes = Vec::<u8>::new();
-        self.vk.clone().write(&mut vk_bytes).unwrap();
-        let path: String = SAVE_TEMP_PATH.to_string() + &(format!("{}.sol", self.key.clone()));
-        println!("path:{}", path);
-        bellman_vk_codegen::render_verification_key(&self.vk, TEMPLATE_SOL, path.clone().as_str());
-        let sol_bytes = fs::read(path.clone()).expect("fail");
-        // rm
-        fs::remove_file(path.clone());
-        (vk_bytes, sol_bytes)
+        let (sender, receiver) = crossbeam::channel::bounded::<Cmd>(10);
+        Ok(ZKPCircomInstance { sender: sender.clone(), receiver: receiver.clone(), r1cs: r1cs.clone(), key: id, prover: Arc::new(setup), vk: (vk.clone() as VerificationKey<Bn256, PlonkCsWidth4WithNextStepParams>) })
     }
 }
 
 
 pub struct ZKPProverContainer {
     mutex: RwLock<HashMap<String, Arc<Mutex<Box<dyn ZKComponent>>>>>,
-    pub nodes: HashMap<String, Arc<ZKPCircomInstance>>,
+    rt: Arc<Runtime>,
 }
 
 impl Default for ZKPProverContainer {
     fn default() -> Self {
         Self {
             mutex: Default::default(),
-            nodes: Default::default(),
+            rt: Arc::new(tokio::runtime::Builder::new_multi_thread().enable_time().enable_io().build().unwrap()),
         }
     }
 }
@@ -199,7 +359,7 @@ impl ZKPProverContainer {
     pub fn register(&mut self, req: RegisterRequest) -> RegisterResponse {
         let mut cache = self.mutex.write().unwrap();
         let instance = cache.entry(req.key.clone()).or_insert(
-            Arc::new(Mutex::new(Box::new(ZKPFactory::default().build(req.key.clone(), req.reader))))
+            Arc::new(Mutex::new(ZKPFactory::default().build_and_start(self.rt.clone(), req.key.clone(), req.reader)))
         );
         let (vk, sol) = instance.clone().lock().unwrap().get_vk_and_sol().unwrap();
         let v = String::from_utf8_lossy(sol.as_slice()).to_string();
@@ -222,11 +382,6 @@ impl ZKPProverContainer {
         } else {
             Err(Error::new(ErrorKind::InvalidData, TempError {}))
         }
-    }
-    // pub fn verify_with_pretty(&self)
-
-    pub fn prove_json(&self, req: ProveRequest) {
-        let res = self.prove(req).unwrap();
     }
 }
 
