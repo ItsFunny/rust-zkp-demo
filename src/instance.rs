@@ -20,6 +20,7 @@ use plonkit::reader::load_witness_from_array;
 use primitive_types::U256;
 use rocket_multipart_form_data::multer::bytes;
 use serde::{Serialize, Deserialize};
+use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use crate::ZKPInstance;
 
@@ -148,47 +149,51 @@ impl ZKPCircomInstance {
     }
 }
 
+// TODO,这里的,全丢到async fn中
 #[async_trait]
 impl Prover for ZKPCircomInstance {
     fn prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
-        let (ts, rs) = oneshot::channel();
-        self.sender.send(Cmd::new(Operation::Prove(req), ts)).map_err(|e| {
-            Error::new(ErrorKind::InvalidData, e)
-        })?;
-        let res = rs.blocking_recv().map_err(|e| {
-            Error::new(ErrorKind::InvalidData, e)
-        })?;
-        if let ResultOperation::Proof(v) = res {
-            Ok(v)
-        } else {
-            unreachable!()
-        }
+        futures::executor::block_on(self.async_prove(req))
     }
 
     async fn async_prove(&self, req: ProveRequest) -> Result<ProveResponse, Error> {
-        self.prove(req)
+        let (ts, mut rs) = oneshot::channel();
+        self.sender.send(Cmd::new(Operation::Prove(req), ts)).map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        })?;
+
+        rs.await.map_err(|e| {
+            Error::new(ErrorKind::InvalidData, e)
+        }).map(|v| {
+            if let ResultOperation::Proof(value) = v {
+                value
+            } else {
+                unreachable!()
+            }
+        })
     }
 }
 
 #[async_trait]
 impl Verifier for ZKPCircomInstance {
     async fn async_verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
-        self.verify(req)
-    }
-
-    fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
-        let (ts, rs) = oneshot::channel();
+        let (ts, mut rs) = oneshot::channel();
         self.sender.send(Cmd::new(Operation::Verify(req), ts)).map_err(|e| {
             Error::new(ErrorKind::InvalidData, e)
         })?;
-        let res = rs.blocking_recv().map_err(|e| {
+        rs.await.map_err(|e| {
             Error::new(ErrorKind::InvalidData, e)
-        })?;
-        if let ResultOperation::Verify(v) = res {
-            Ok(v)
-        } else {
-            unreachable!()
-        }
+        }).map(|v| {
+            if let ResultOperation::Verify(value) = v {
+                value
+            } else {
+                unreachable!()
+            }
+        })
+    }
+
+    fn verify(&self, req: VerifyRequest) -> Result<VerifyResponse, Error> {
+        futures::executor::block_on(self.async_verify(req))
     }
 }
 
@@ -292,9 +297,13 @@ impl ZKPFactory {
             return res.unwrap();
         }
     }
-    pub fn build_and_start(self, id: String, r: Vec<u8>) -> Box<dyn ZKComponent> {
+    // TODO: pass runtime
+    pub fn build_and_start(self, rt: Arc<Runtime>, id: String, r: Vec<u8>) -> Box<dyn ZKComponent> {
         let ret = self.build(id, r);
-        tokio::spawn(ret.clone().start_zk());
+        let v = ret.clone();
+        rt.clone().spawn(async move {
+            v.clone().start_zk().await
+        });
         return Box::new(ret.clone());
     }
 
@@ -334,12 +343,14 @@ impl ZKPFactory {
 
 pub struct ZKPProverContainer {
     mutex: RwLock<HashMap<String, Arc<Mutex<Box<dyn ZKComponent>>>>>,
+    rt: Arc<Runtime>,
 }
 
 impl Default for ZKPProverContainer {
     fn default() -> Self {
         Self {
             mutex: Default::default(),
+            rt: Arc::new(tokio::runtime::Builder::new_multi_thread().enable_time().enable_io().build().unwrap()),
         }
     }
 }
@@ -348,7 +359,7 @@ impl ZKPProverContainer {
     pub fn register(&mut self, req: RegisterRequest) -> RegisterResponse {
         let mut cache = self.mutex.write().unwrap();
         let instance = cache.entry(req.key.clone()).or_insert(
-            Arc::new(Mutex::new(ZKPFactory::default().build_and_start(req.key.clone(), req.reader)))
+            Arc::new(Mutex::new(ZKPFactory::default().build_and_start(self.rt.clone(), req.key.clone(), req.reader)))
         );
         let (vk, sol) = instance.clone().lock().unwrap().get_vk_and_sol().unwrap();
         let v = String::from_utf8_lossy(sol.as_slice()).to_string();
